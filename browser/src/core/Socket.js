@@ -45,8 +45,19 @@ app.definitions.Socket = L.Class.extend({
 			window.app.console.log('Creating pre-processor worker');
 			this._msgPreProcessor = new Worker('src/core/MessagePreProcessor.js');
 			this._msgPreProcessor.addEventListener('message', (e) => this._onPreProcessorMessage(e));
+			this._msgPreProcessorTimer = null;
+			this._msgPreProcessorPendingEvents = [];
 			this._msgPreProcessorMap = new Map();
 			this._msgPreProcessorId = 0;
+
+			const bufferSize = window.tileSize * window.tileSize * 4 * 4;
+			const nBuffers = 128;
+
+			this._msgPreProcessorBuffers = [];
+			this._msgPreProcessorBuffersPendingSlurp = [];
+			for (var i = 0; i < nBuffers; ++i) {
+				this._msgPreProcessorBuffers.push(new Uint8Array(bufferSize));
+			}
 		}
 	},
 
@@ -452,6 +463,13 @@ app.definitions.Socket = L.Class.extend({
 			// Let other layers / overlays catch up.
 			this._map.fire('messagesdone');
 
+			// Process any tiles that overflowed the queue or were received during
+			// tile processing.
+			while (this._msgPreProcessorBuffersPendingSlurp.length)
+				this._msgPreProcessorBuffers.push(this._msgPreProcessorBuffersPendingSlurp.shift());
+			if (this._msgPreProcessorPendingEvents.length)
+				this._queueTileProcessing();
+
 			this._renderEventTimerStart = performance.now();
 		}
 	},
@@ -464,18 +482,11 @@ app.definitions.Socket = L.Class.extend({
 	// process so - slurp and then emit at idle - its faster to delay!
 	_slurpMessage: function(e) {
 		this._extractTextImg(e);
-		if (e.image && e.image.rawData) {
-			try {
-				var id = this._msgPreProcessorId++;
-				this._msgPreProcessor.postMessage({ 'id': id, 'message': 'image.rawData', 'rawData' : e.image.rawData, 'isKeyframe' : e.image.isKeyframe }, [e.image.rawData.buffer])
-				this._msgPreProcessorMap.set(id, e);
-				return
-			} catch (error) {
-				window.app.console.error('Failed to post message to pre-processor worker: ' + error)
-				window.app.console.log(e);
-			}
+		if (e.image && e.image.rawData && this._msgPreProcessor) {
+			this._queueTileProcessing(e);
+		} else {
+			this._queueSlurpEvent(e);
 		}
-		this._queueSlurpEvent(e);
 	},
 
 	_queueSlurpEvent: function(e) {
@@ -495,18 +506,63 @@ app.definitions.Socket = L.Class.extend({
 		this._queueSlurpEventEmission(delayMS);
 	},
 
+	_queueTileProcessing: function(e) {
+		if (e)
+			this._msgPreProcessorPendingEvents.push(e);
+		if (this._msgPreProcessorTimer !== null || !this._msgPreProcessorBuffers.length || this._msgPreProcessorPendingEvents.length == 0)
+			return;
+
+		var that = this;
+		this._msgPreProcessorTimer = setTimeout(function() {
+			while (that._msgPreProcessorPendingEvents.length && that._msgPreProcessorBuffers.length) {
+				var tiles = [];
+				var buffer = that._msgPreProcessorBuffers.shift();
+				var transferBuffers = [buffer.buffer];
+				var totalSize = 0;
+
+				// Send as many tiles as will fit in a single buffer
+				while (that._msgPreProcessorPendingEvents.length) {
+					// FIXME: Have server include delta size on event
+					var size = (window.tileSize * window.tileSize * 4);
+					if (totalSize + size > buffer.length)
+						break;
+
+					totalSize += size;
+					var e = that._msgPreProcessorPendingEvents.shift();
+					var id = that._msgPreProcessorId++;
+					that._msgPreProcessorMap.set(id, e);
+					tiles.push({ 'id': id,
+								'rawData': e.image.rawData,
+								'isKeyframe': e.image.isKeyframe,
+								'size': size });
+					transferBuffers.push(e.image.rawData.buffer);
+				}
+				try {
+					that._msgPreProcessor.postMessage({ 'message': 'tile-process', 'tiles' : tiles, 'buffer': buffer }, transferBuffers)
+				} catch (error) {
+					window.app.console.error('Failed to post message to pre-processor worker', error)
+					// FIXME: How can you sensibly recover here?
+				}
+			}
+			that._msgPreProcessorTimer = null;
+		}, 1);
+	},
+
 	_onPreProcessorMessage: function(e) {
         switch(e.data.message) {
-		case 'image.rawData':
-			var processedEvent = this._msgPreProcessorMap.get(e.data.id);
-			this._msgPreProcessorMap.delete(e.data.id);
-			processedEvent.image.rawData = e.data.rawData;
-			processedEvent.image.processedData = e.data.processedData;
-			this._queueSlurpEvent(processedEvent);
+		case 'tile-process':
+			this._msgPreProcessorBuffersPendingSlurp.push(e.data.buffer);
+			for (const tile of e.data.tiles) {
+				var processedEvent = this._msgPreProcessorMap.get(tile.id);
+				this._msgPreProcessorMap.delete(tile.id);
+				processedEvent.image.rawData = tile.rawData;
+				processedEvent.image.processedData = tile.processedData;
+				this._queueSlurpEvent(processedEvent);
+			}
 			break;
 
 		default:
-			console.error('Unrecognised preprocessor message', e);
+			window.app.console.error('Unrecognised preprocessor message', e);
 		}
 	},
 
