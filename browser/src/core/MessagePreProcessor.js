@@ -14,7 +14,7 @@ if ('undefined' === typeof window) {
 			case 'image.rawData':
 				var delta = self.fzstd.decompress(e.data.rawData);
 				if (e.data.isKeyframe) {
-					delta = self.unpremultiply(delta, delta.length);
+					self.unpremultiply(delta, delta.length);
 				} else {
 					for (var i = 0; i < delta.length; ++i) {
 						switch (delta[i]) {

@@ -6216,8 +6216,8 @@ L.CanvasTileLayer = L.Layer.extend({
 
 		if (!rawDelta) {
 			// FIXME:used clamped array ... as a 2nd parameter
-			var decompressedDelta = window.fzstd.decompress(compressedDelta);
-			rawDelta = window.unpremultiply(decompressedDelta, decompressedDelta.length);
+			rawDelta = window.fzstd.decompress(compressedDelta);
+			window.unpremultiply(rawDelta, rawDelta.length);
 		}
 
 		var imgData;
@@ -6234,7 +6234,7 @@ L.CanvasTileLayer = L.Layer.extend({
 						       rawDelta.length + ' vs. ' + (canvas.width * canvas.height * 4));
 			}
 
-			imgData = new ImageData(rawDelta, canvas.width, canvas.height);
+			imgData = new ImageData(new Uint8ClampedArray(rawDelta.buffer, rawDelta.byteOffset, rawDelta.byteLength), canvas.width, canvas.height);
 
 			if (this._debugDeltas)
 				window.app.console.log('Applied keyframe ' + i++ + ' of total size ' + rawDelta.length +
