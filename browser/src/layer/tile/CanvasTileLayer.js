@@ -4622,6 +4622,25 @@ L.CanvasTileLayer = L.Layer.extend({
 		}
 	},
 
+	_queueRehydrateTile: function(tile) {
+		if (tile.canvas || !tile.hasKeyframe())
+			return;
+
+		// Create a synthetic tile keyframe event to rehydrate this tile
+		// in SocketWorker.
+		window.app.console.log('Queueing tile rehydration');
+		var textmsg = "tile: tileposx=" + tile.coords.x +
+					" tileposy=" + tile.coords.y +
+					" tileWidth=" + window.tileSize +
+					" tileHeight=" + window.tileSize +
+					" part=" + tile.coords.part;
+		if (tile.coords.mode)
+			textmsg += " mode=" + tile.coords.mode;
+		var e = { data: textmsg, imgBytes: tile.rawDeltas, imgIndex: 0, isComplete: () => true };
+		tile.rawDeltas = null; // Prevent this happening more than once
+		app.socket._slurpMessage(e);
+	},
+
 	_getMissingTiles: function (pixelBounds, zoom) {
 		var tileRanges = this._pxBoundsToTileRanges(pixelBounds);
 		var queue = [];
@@ -4642,9 +4661,10 @@ L.CanvasTileLayer = L.Layer.extend({
 
 					var key = this._tileCoordsToKey(coords);
 					var tile = this._tiles[key];
-					if (tile && !tile.needsFetch())
+					if (tile && !tile.needsFetch()) {
 						tile.current = true;
-					else
+						this._queueRehydrateTile(tile);
+					} else
 						queue.push(coords);
 				}
 			}
@@ -5113,13 +5133,14 @@ L.CanvasTileLayer = L.Layer.extend({
 			tile.canvas = canvas;
 
 			// re-hydrate recursively from cached data
-			if (tile.hasKeyframe())
+			/*if (tile.hasKeyframe())
 			{
 				if (this._debugDeltas)
 					window.app.console.log('Restoring a tile from cached delta at ' +
 							       this._tileCoordsToKey(tile.coords));
+				window.app.console.log('Rehydrating on main thread');
 				this._applyDelta(tile, tile.rawDeltas, null, true, false);
-			}
+			}*/
 		}
 		if (!forPrefetch)
 		{
@@ -5527,6 +5548,25 @@ L.CanvasTileLayer = L.Layer.extend({
 	_queueAcknowledgement: function (tileMsgObj) {
 		// Queue acknowledgment, that the tile message arrived
 		this._queuedProcessed.push(+tileMsgObj.wireId);
+	},
+
+	getRehydrationDeltas: function (textMsg) {
+		// Tile keyframes shouldn't trigger rehydration
+		if (textMsg.startsWith('tile:'))
+			return null;
+
+		var tileMsgObj = app.socket.parseServerCmd(textMsg);
+		this._checkTileMsgObject(tileMsgObj);
+
+		var coords = this._tileMsgToCoords(tileMsgObj);
+		var key = this._tileCoordsToKey(coords);
+		var tile = this._tiles[key];
+
+		if (tile && tile.hasKeyframe() && !tile.canvas) {
+			return tile.rawDeltas;
+		}
+
+		return null;
 	},
 
 	_onTileMsg: function (textMsg, img) {

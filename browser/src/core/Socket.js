@@ -492,6 +492,20 @@ app.definitions.Socket = L.Class.extend({
 	_slurpMessage: function(e) {
 		this._extractTextImg(e);
 		if (e.image && e.image.rawData && this._worker) {
+			/*
+			// Check if this tile needs to be rehydrated and generate an event
+			// so that occurs on the Worker instead of the main thread.
+			var docLayer = this._map ? this._map._docLayer : undefined;
+			var rehydrationDeltas = docLayer ? docLayer.getRehydrationDeltas(e.textMsg) : undefined;
+			if (rehydrationDeltas) {
+				window.app.console.log('Queueing rehydration event');
+				var textMsg = e.textMsg.replace('delta:', 'tile:');
+				var re = { data: textMsg, textMsg: textMsg };
+				re.image = { rawData: rehydrationDeltas, isKeyframe: true };
+				re.imageIsComplete = true;
+				this._queueWorkerTileProcessing(re);
+			}
+*/
 			this._queueWorkerTileProcessing(e);
 		} else {
 			this._queueSlurpEvent(e);
