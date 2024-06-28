@@ -206,6 +206,7 @@ COOL_JS_LST =\
 	src/core/Rectangle.ts \
 	src/core/Class.js \
 	src/core/Events.js \
+	src/core/SocketWorker.js \
 	src/core/Socket.js \
 	src/core/Matrix.js \
 	src/core/Debug.js \
@@ -224,6 +225,7 @@ COOL_JS_LST =\
 	src/layer/Layer.js \
 	src/layer/tile/SheetGeometry.ts \
 	src/layer/tile/Premult.ts \
+	src/layer/tile/CanvasTileUtils.ts \
 	src/canvas/CanvasSectionProps.js \
 	src/canvas/CanvasSectionContainer.ts \
 	src/canvas/CanvasSectionObject.ts \
@@ -984,6 +986,7 @@ pot:
 		src/slideshow/operation/SRotate.ts \
 		src/slideshow/operation/SScale.ts \
 		src/slideshow/operation/STranslate.ts \
+		src/core/SocketWorker.js \
 		src/core/Socket.js \
 		src/core/Debug.js \
 		src/docstate.js \
@@ -993,6 +996,7 @@ pot:
 		src/app/GraphicSelectionMiddleware.ts \
 		src/errormessages.js \
 		src/layer/tile/CanvasTileLayer.js \
+		src/layer/tile/CanvasTileUtils.ts \
 		src/canvas/sections/CommentListSection.ts \
 		src/canvas/sections/CommentSection.ts \
 		src/canvas/sections/URLPopUpSection.ts \
