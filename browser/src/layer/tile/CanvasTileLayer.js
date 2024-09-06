@@ -1241,6 +1241,9 @@ L.CanvasTileLayer = L.Layer.extend({
 			},
 			hasKeyframe: function() {
 				return this.rawDeltas && this.rawDeltas.length > 0;
+			},
+			needsRehydration: function() {
+				return this.hasKeyframe() && !this.imgDataCache && !this.canvas;
 			}
 		};
 		this._emptyTilesCount += 1;
@@ -4642,9 +4645,11 @@ L.CanvasTileLayer = L.Layer.extend({
 
 					var key = this._tileCoordsToKey(coords);
 					var tile = this._tiles[key];
-					if (tile && !tile.needsFetch())
+					if (tile && !tile.needsFetch()) {
 						tile.current = true;
-					else
+						if (tile.needsRehydration())
+							this._rehydrateTile(tile, false);
+					} else
 						queue.push(coords);
 				}
 			}
@@ -5113,13 +5118,9 @@ L.CanvasTileLayer = L.Layer.extend({
 			tile.canvas = canvas;
 
 			// re-hydrate recursively from cached data
-			if (tile.hasKeyframe())
-			{
-				if (this._debugDeltas)
-					window.app.console.log('Restoring a tile from cached delta at ' +
-							       this._tileCoordsToKey(tile.coords));
-				this._applyDelta(tile, tile.rawDeltas, null, true, false);
-			}
+			// This may have happened if we forced garbage collection between
+			// here and calling _getMissingTiles.
+			this._rehydrateTile(tile, true);
 		}
 		if (!forPrefetch)
 		{
@@ -5274,6 +5275,61 @@ L.CanvasTileLayer = L.Layer.extend({
 		return ctx;
 	},
 
+	_rehydrateTile: function(tile, now) {
+		if (!tile.hasKeyframe()) return;
+
+		if (!now) {
+				if (this._debugDeltas)
+					window.app.console.log('Asynchronously restoring a tile from cached delta at ' +
+								this._tileCoordsToKey(tile.coords));
+				
+				// Create a synthetic tile keyframe event to rehydrate this tile
+				// in SocketWorker.
+				window.app.console.debug('Queueing tile rehydration');
+				var textmsg = "tile: tileposx=" + tile.coords.x +
+							" tileposy=" + tile.coords.y +
+							" tileWidth=" + window.tileSize +
+							" tileHeight=" + window.tileSize +
+							" part=" + tile.coords.part;
+				if (tile.coords.mode)
+					textmsg += " mode=" + tile.coords.mode;
+				var e = { data: textmsg, imgBytes: tile.rawDeltas, imgIndex: 0, isComplete: () => true };
+				tile.rawDeltas = null; // Prevent this happening more than once
+				app.socket._slurpMessage(e);
+
+				return;
+		}
+
+		if (this._debugDeltas)
+			window.app.console.log('Restoring a tile from cached delta at ' +
+						   this._tileCoordsToKey(tile.coords));
+
+		var ctx = this._ensureContext(tile);
+		if (!ctx) // out of canvas / texture memory.
+			return;
+
+		// FIXME:used clamped array ... as a 2nd parameter
+		var decompressedDeltas = window.fzstd.decompress(tile.rawDeltas);
+
+		if (this._debugDeltas)
+			window.app.console.log('Rehydrating a raw RLE keyframe of length ' + decompressedDeltas.length +
+							' hex: ' + hex2string(decompressedDeltas, decompressedDeltas.length));;
+
+		var width = tile.canvas.width;
+		var height = tile.canvas.height;
+
+		var result = new Uint8Array(width * height * 4);
+		var offset = L.CanvasTileUtils.unrle(decompressedDeltas, width, height, result);
+
+		var imgData = new ImageData(new Uint8ClampedArray(result.buffer), width, height);
+
+		if (this._debugDeltas)
+			window.app.console.log('Rehydrated a keyframe of total size ' + offset +
+							' at stream offset 0');
+		
+		this._applyDeltaChunks(tile, imgData, decompressedDeltas, offset, true);
+	},
+
 	_applyDelta: function(tile, rawDelta, decompressedDeltas, isKeyframe, wireMessage) {
 		// 'Uint8Array' rawDelta, decompressedDeltas
 
@@ -5353,45 +5409,33 @@ L.CanvasTileLayer = L.Layer.extend({
 		}
 
 		// apply potentially several deltas in turn.
-		var i = 0;
 		var offset = 0;
-		var needsUnpremultiply = false;
 		var imgData;
 
-		// May have been changed by _ensureContext garbage collection
-		var canvas = tile.canvas;
-
 		if (!decompressedDeltas) {
-			// FIXME:used clamped array ... as a 2nd parameter
-			decompressedDeltas = window.fzstd.decompress(rawDelta);
-
-			if (isKeyframe) {
-				if (this._debugDeltas)
-					window.app.console.log('Applying a raw RLE keyframe of length ' + decompressedDeltas.length +
-								   ' hex: ' + hex2string(decompressedDeltas, decompressedDeltas.length));;
-	
-				var width = canvas.width;
-				var height = canvas.height;
-	
-				var result = new Uint8Array(width * height * 4);
-				offset = L.CanvasTileUtils.unrle(decompressedDeltas, width, height, result);
-	
-				imgData = new ImageData(new Uint8ClampedArray(result.buffer), width, height);
-	
-				if (this._debugDeltas)
-					window.app.console.log('Applied keyframe of total size ' + offset +
-								   ' at stream offset 0');
-			}
-
-			// delta updates will need to be unpremultiplied
-			needsUnpremultiply = true;
+			window.app.console.error('_applyDelta called with null decompressedDeltas');
+			return;
 		} else if (isKeyframe) {
-			var width = canvas.width;
-			var height = canvas.height;
+			var width = tile.canvas.width;
+			var height = tile.canvas.height;
 			imgData = new ImageData(new Uint8ClampedArray(decompressedDeltas.buffer, decompressedDeltas.byteOffset, decompressedDeltas.byteLength), width, height);
 			offset = width * height * 4;
 		}
 
+		this._applyDeltaChunks(tile, imgData, decompressedDeltas, offset, false);
+
+		if (traceEvent)
+			traceEvent.finish();
+	},
+
+	_applyDeltaChunks: function(tile, imgData, decompressedDeltas, offset, needsUnpremultiply) {
+		var canvas = tile.canvas;
+		if (!canvas) return;
+
+		var ctx = canvas.getContext('2d');
+		if (!ctx) return;
+
+		var i = 0;
 		while (offset < decompressedDeltas.length)
 		{
 			if (this._debugDeltas)
@@ -5403,7 +5447,7 @@ L.CanvasTileLayer = L.Layer.extend({
 			if (delta.length >= canvas.width * canvas.height * 4)
 			{
 				window.app.console.log('Unusual delta possibly mis-tagged, suspicious size vs. type ' +
-						       delta.length + ' vs. ' + (canvas.width * canvas.height * 4));
+								delta.length + ' vs. ' + (canvas.width * canvas.height * 4));
 			}
 
 			if (!imgData) // no keyframe
@@ -5421,7 +5465,7 @@ L.CanvasTileLayer = L.Layer.extend({
 			var len = this._applyDeltaChunk(imgData, delta, oldData, canvas.width, canvas.height, needsUnpremultiply);
 			if (this._debugDeltas)
 				window.app.console.log('Applied chunk ' + i++ + ' of total size ' + delta.length +
-						       ' at stream offset ' + offset + ' size ' + len);
+								' at stream offset ' + offset + ' size ' + len);
 
 			offset += len;
 		}
@@ -5432,9 +5476,6 @@ L.CanvasTileLayer = L.Layer.extend({
 			tile.imgDataCache = imgData;
 			ctx.putImageData(imgData, 0, 0);
 		}
-
-		if (traceEvent)
-			traceEvent.finish();
 	},
 
 	_applyDeltaChunk: function(imgData, delta, oldData, width, height, needsUnpremultiply) {
