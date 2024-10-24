@@ -25,7 +25,17 @@ if ('undefined' === typeof window) {
 	var bufferSize = 0;
 	var buffer;
 
-	function onMessage(e) {
+	const requestQueue = [];
+
+	function processRequestQueue() {
+		if(requestQueue.length === 0) {
+			return;
+		}
+
+		const e = requestQueue.shift();
+
+		console.warn('WORKER remove: there are now: ' + requestQueue.length + ' remaining events');
+
 		switch (e.data.message) {
 			case 'decompress':
 				var tile = e.data.tile;
@@ -108,4 +118,12 @@ if ('undefined' === typeof window) {
 				console.error('Unrecognised worker message');
 		}
 	}
+
+	function onMessage(e) {
+		requestQueue.unshift(e);
+		console.warn('WORKER add: there are: ' + requestQueue.length + ' pending events');
+	}
+
+
+	setInterval(processRequestQueue, 0);
 }
